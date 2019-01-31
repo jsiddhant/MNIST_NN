@@ -6,11 +6,11 @@ config = {}
 config['layer_specs'] = [784, 100, 100, 10]  # The length of list denotes number of hidden layers; each element denotes number of neurons in that layer; first element is the size of input layer, last element is the size of output layer.
 config['activation'] = 'sigmoid'  # Takes values 'sigmoid', 'tanh' or 'ReLU'; denotes activation function for hidden layers
 config['batch_size'] = 1000  # Number of training samples per batch to be passed to network
-config['epochs'] = 120  # Number of epochs to train the model
-config['early_stop'] = False  # Implement early stopping or not
+config['epochs'] = 10  # Number of epochs to train the model
+config['early_stop'] = True  # Implement early stopping or not
 config['early_stop_epoch'] = 5  # Number of epochs for which validation loss increases to be counted as overfitting
 config['L2_penalty'] = 0.0001  # Regularization constant
-config['momentum'] = False  # Denotes if momentum is to be applied or not
+config['momentum'] = True  # Denotes if momentum is to be applied or not
 config['momentum_gamma'] = 0.9  # Denotes the constant 'gamma' in momentum expression
 config['learning_rate'] = 0.0001  # Learning rate of gradient descent algorithm
 
@@ -150,8 +150,8 @@ class Layer():
         """
 
         self.d_x = delta.dot(self.w.T)
-        self.d_w_old = self.d_w if self.d_w is not None else np.zeros(self.w.shape)
-        self.d_b_old = self.d_b if self.d_b is not None else np.zeros(self.b.shape)
+        self.d_w_old = calc_momentum(self.d_w_old, self.d_w, self.w.shape)
+        self.d_b_old = calc_momentum(self.d_b_old, self.d_b, self.b.shape)
         self.d_w = self.x.T.dot(delta)
         self.d_b = np.sum(delta, axis=0)
 
@@ -209,6 +209,17 @@ class Neuralnetwork():
             delta = layer.backward_pass(delta)
 
 
+def calc_momentum(old_grad, new_grad, shape, gamma = config['momentum_gamma']):
+
+    if new_grad is None:
+        if old_grad is None:
+            return np.zeros(shape)
+        else:
+            return gamma * old_grad
+    else:
+        return gamma * (old_grad + new_grad)
+
+
 def trainer(model, X_train, y_train, X_valid, y_valid, config):
     """
     Write the code to train the network. Use values from config to set parameters
@@ -217,11 +228,13 @@ def trainer(model, X_train, y_train, X_valid, y_valid, config):
 
     train_loss = []
     validation_loss = []
+    train_acc = []
+    valid_acc = []
     epoch = config['epochs']
     B = config['batch_size']
     learning_rate = config['learning_rate'] # 0.01 times slower learning rate required for ReLU
     regularization = config['L2_penalty']
-    momentum = config['momentum_gamma']
+    # momentum = config['momentum_gamma']
     N = X_train.shape[0]
     id = np.arange(0, N)
     early_stop_idx = 0
@@ -237,27 +250,35 @@ def trainer(model, X_train, y_train, X_valid, y_valid, config):
             for layer in model.layers:
                 if isinstance(layer, Layer):
                     layer.w = layer.w + learning_rate * layer.d_w - 2*learning_rate*regularization*layer.w \
-                              + learning_rate*momentum * layer.d_w_old
-                    layer.b = layer.b + learning_rate * layer.d_b - 2*learning_rate*regularization*layer.b \
-                              + learning_rate * momentum * layer.d_b_old
+                              + (learning_rate * layer.d_w_old if config['momentum'] else 0)
+                    layer.b = layer.b + learning_rate * layer.d_b \
+                              + (learning_rate * layer.d_b_old if config['momentum'] else 0)
 
         print('Epoch: ' + str(i) + ' Loss: ' + str(loss))  # Random Pass
 
         loss_valid, valid_pred = model.forward_pass(X_valid, y_valid)
         train_loss.append(loss)
         validation_loss.append(loss_valid)
+        train_acc.append(test(model, X_train, y_train, config))
+        valid_acc.append(test(model, X_valid, y_valid, config))
         if i > 0 and config['early_stop'] and loss_valid > prev_loss_valid:
             early_stop_idx += 1
-            if (early_stop_idx == 5):
-                print("Early Stop due to overfitting")
+            if early_stop_idx == 5:
+                print("Early Stop due to overfitting in epoch: " + str(i))
                 break
         else:
             early_stop_idx = 0
             prev_loss_valid = loss_valid
 
-    print('Training Accuracy: ' + str(test(model, X_train, y_train, config)))
-    print('Validation Accuracy: ' + str(test(model, X_valid, y_valid, config)))
-    create_train_plot(epoch, train_loss, validation_loss, 'Training and Validation Loss: ' + config['activation'] )
+    print('Training Accuracy: ' + str(train_acc[-1]))
+    print('Validation Accuracy: ' + str(valid_acc[-1]))
+
+    fig = plt.figure()
+    create_train_plot(epoch, train_loss, validation_loss, 'Loss and Accuracy: ' + config['activation'], label1='Training Loss', label2='Validation Loss')
+    create_train_plot(epoch, train_acc, valid_acc, 'Loss and Accuracy: ' + config['activation'], label1='Training Accuracy', label2='Validation Accuracy')
+    print('-------------------------Training Finished---------------------------')
+    print('Testing Accuracy: ' + str(test(model, X_test, y_test, config)))
+    plt.show()
 
 
 def test(model, X_test, y_test, config):
@@ -269,21 +290,21 @@ def test(model, X_test, y_test, config):
     return accuracy
 
 
-def create_train_plot(epochs, train_err, hold_err, title):
+def create_train_plot(epochs, train_err, hold_err, title, label1 = 'Training', label2 = 'Validation'):
 
-    fig = plt.figure()
-    fig.suptitle(title)
+
+    plt.suptitle(title)
     ep = [i+1 for i in range(0, epochs)]
     train_err = np.asarray(train_err)
     hold_err = np.asarray(hold_err)
 
-    plt.plot(ep, train_err, '-b', label='Training Loss')
-    plt.plot(ep, hold_err, '--r', label='Validation Loss')
+    plt.plot(ep, train_err, '-', label=label1)
+    plt.plot(ep, hold_err, '--', label=label2)
 
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend(loc='upper right')
-    plt.show()
+
 
 
 if __name__ == "__main__":
