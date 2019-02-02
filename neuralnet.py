@@ -3,8 +3,8 @@ import pickle
 import matplotlib.pyplot as plt
 
 config = {}
-config['layer_specs'] = [784, 100, 100, 10]  # The length of list denotes number of hidden layers; each element denotes number of neurons in that layer; first element is the size of input layer, last element is the size of output layer.
-config['activation'] = 'sigmoid'  # Takes values 'sigmoid', 'tanh' or 'ReLU'; denotes activation function for hidden layers
+config['layer_specs'] = [784, 50, 10]  # The length of list denotes number of hidden layers; each element denotes number of neurons in that layer; first element is the size of input layer, last element is the size of output layer.
+config['activation'] = 'tanh'  # Takes values 'sigmoid', 'tanh' or 'ReLU'; denotes activation function for hidden layers
 config['batch_size'] = 1000  # Number of training samples per batch to be passed to network
 config['epochs'] = 10  # Number of epochs to train the model
 config['early_stop'] = True  # Implement early stopping or not
@@ -122,11 +122,11 @@ class Activation:
 
 class Layer():
     def __init__(self, in_units, out_units):
-        np.random.seed(42)
+        # np.random.seed(42)
         self.w = np.random.randn(in_units, out_units)  # Weight matrix
         self.b = np.zeros((1, out_units)).astype(np.float32)  # Bias
-        self.d_w_old = None
-        self.d_b_old = None
+        self.d_w_momentum = None
+        self.d_b_momentum = None
         self.x = None  # Save the input to forward_pass in this
         self.a = None  # Save the output of forward pass in this (without activation)
         self.d_x = None  # Save the gradient w.r.t x in this #dj/da #delta -> grad_act * d_x
@@ -150,8 +150,8 @@ class Layer():
         """
 
         self.d_x = delta.dot(self.w.T)
-        self.d_w_old = calc_momentum(self.d_w_old, self.d_w, self.w.shape)
-        self.d_b_old = calc_momentum(self.d_b_old, self.d_b, self.b.shape)
+        self.d_w_momentum = calc_momentum(self.d_w_momentum, self.d_w, self.w.shape)
+        self.d_b_momentum = calc_momentum(self.d_b_momentum, self.d_b, self.b.shape)
         self.d_w = self.x.T.dot(delta)
         self.d_b = np.sum(delta, axis=0)
 
@@ -177,16 +177,12 @@ class Neuralnetwork():
 
         self.x = x
         self.targets = targets
-        regular_loss = 0
+
         for layer in self.layers:
             x = layer.forward_pass(x)
-            # regular_loss = regular_loss + config['L2_penalty']*np.linalg.norm(layer.w)
-            # Momentum Here
-            if isinstance(layer, Layer):
-                regular_loss = regular_loss + np.linalg.norm(layer.w)
 
         self.y = softmax(x)
-        loss = None if targets is None else self.loss_func(self.y, targets) + config['L2_penalty'] * regular_loss
+        loss = None if targets is None else self.loss_func(self.y, targets)
         return loss, self.y
 
     def loss_func(self, logits, targets):
@@ -194,8 +190,8 @@ class Neuralnetwork():
         find cross entropy loss between logits and targets
         '''
         eps = 10e-12
-        prediction = np.clip(targets, eps, 1. - eps)
-        output = -np.mean(logits * np.log(prediction + 1e-9))
+        prediction = np.clip(logits, eps, 1. - eps)
+        output = -np.mean(np.sum(targets * np.log(prediction), axis=1))
 
         return output
 
@@ -209,15 +205,15 @@ class Neuralnetwork():
             delta = layer.backward_pass(delta)
 
 
-def calc_momentum(old_grad, new_grad, shape, gamma = config['momentum_gamma']):
+def calc_momentum(old_momentum, old_grad, shape, gamma = config['momentum_gamma']):
 
-    if new_grad is None:
-        if old_grad is None:
+    if old_grad is None:
+        if old_momentum is None:
             return np.zeros(shape)
         else:
-            return gamma * old_grad
+            return gamma * old_momentum
     else:
-        return gamma * (old_grad + new_grad)
+        return gamma * (old_momentum + old_grad)
 
 
 def trainer(model, X_train, y_train, X_valid, y_valid, config):
@@ -232,7 +228,7 @@ def trainer(model, X_train, y_train, X_valid, y_valid, config):
     valid_acc = []
     epoch = config['epochs']
     B = config['batch_size']
-    learning_rate = config['learning_rate'] # 0.01 times slower learning rate required for ReLU
+    learning_rate = config['learning_rate']*2 # 0.01 times slower learning rate required for ReLU
     regularization = config['L2_penalty']
     # momentum = config['momentum_gamma']
     N = X_train.shape[0]
@@ -250,10 +246,11 @@ def trainer(model, X_train, y_train, X_valid, y_valid, config):
             for layer in model.layers:
                 if isinstance(layer, Layer):
                     layer.w = layer.w + learning_rate * layer.d_w - 2*learning_rate*regularization*layer.w \
-                              + (learning_rate * layer.d_w_old if config['momentum'] else 0)
+                              + (learning_rate * layer.d_w_momentum if config['momentum'] else 0)
                     layer.b = layer.b + learning_rate * layer.d_b \
-                              + (learning_rate * layer.d_b_old if config['momentum'] else 0)
+                              + (learning_rate * layer.d_b_momentum if config['momentum'] else 0)
 
+        loss, y = model.forward_pass(X_train, targets=y_train)
         print('Epoch: ' + str(i) + ' Loss: ' + str(loss))  # Random Pass
 
         loss_valid, valid_pred = model.forward_pass(X_valid, y_valid)
@@ -261,7 +258,7 @@ def trainer(model, X_train, y_train, X_valid, y_valid, config):
         validation_loss.append(loss_valid)
         train_acc.append(test(model, X_train, y_train, config))
         valid_acc.append(test(model, X_valid, y_valid, config))
-        if i > 0 and config['early_stop'] and loss_valid > prev_loss_valid:
+        if i > 0 and config['early_stop'] and loss_valid >= prev_loss_valid:
             early_stop_idx += 1
             if early_stop_idx == 5:
                 print("Early Stop due to overfitting in epoch: " + str(i))
@@ -274,8 +271,9 @@ def trainer(model, X_train, y_train, X_valid, y_valid, config):
     print('Validation Accuracy: ' + str(valid_acc[-1]))
 
     fig = plt.figure()
-    create_train_plot(epoch, train_loss, validation_loss, 'Loss and Accuracy: ' + config['activation'], label1='Training Loss', label2='Validation Loss')
-    create_train_plot(epoch, train_acc, valid_acc, 'Loss and Accuracy: ' + config['activation'], label1='Training Accuracy', label2='Validation Accuracy')
+    create_train_plot(i+1, train_loss, validation_loss, 'Loss: ' + config['activation'], label1='Training Loss', label2='Validation Loss')
+    plt.show()
+    create_train_plot(i+1, train_acc, valid_acc, 'Accuracy: ' + config['activation'], label1='Training Accuracy', label2='Validation Accuracy', loc='upper left')
     print('-------------------------Training Finished---------------------------')
     print('Testing Accuracy: ' + str(test(model, X_test, y_test, config)))
     plt.show()
@@ -290,7 +288,7 @@ def test(model, X_test, y_test, config):
     return accuracy
 
 
-def create_train_plot(epochs, train_err, hold_err, title, label1 = 'Training', label2 = 'Validation'):
+def create_train_plot(epochs, train_err, hold_err, title, label1 = 'Training', label2 = 'Validation', loc='upper right'):
 
 
     plt.suptitle(title)
@@ -303,8 +301,52 @@ def create_train_plot(epochs, train_err, hold_err, title, label1 = 'Training', l
 
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.legend(loc='upper right')
+    plt.legend(loc=loc)
+    
 
+def grad_comparer(model, X, y, idx, isWeight=False, eps=10 ** -1, layerNum=0):
+    assert (X.shape[0] == y.shape[0])
+    if isWeight:
+
+        _, _ = model.forward_pass(X, y)
+        model.backward_pass()
+        grad1 = -model.layers[layerNum].d_w[idx]
+
+        model.layers[layerNum].w[idx] += eps
+        l2, _ = model.forward_pass(X, y)
+
+        model.layers[layerNum].w[idx] -= 2 * eps
+        l1, _ = model.forward_pass(X, y)
+
+        # recover
+        model.layers[layerNum].w[idx] += eps
+        grad2 = (l2 - l1) / (2 * eps)
+
+        print("Weight  , grad_back_prop : {0:2.10f}, grad_numeric : {1:2.10f}" \
+              .format(grad1, grad2))
+
+
+    else:
+
+        model.forward_pass(X, y)
+        model.backward_pass()
+        grad1 = -model.layers[layerNum].d_b.reshape(1,-1)[idx]
+
+        model.layers[layerNum].b[idx] += eps
+        l2, _ = model.forward_pass(X, y)
+
+        model.layers[layerNum].b[idx] -= 2 * eps
+        l1, _ = model.forward_pass(X, y)
+
+        # recover
+        model.layers[layerNum].b[idx] += eps
+
+        grad2 = (l2 - l1) / (2 * eps)
+        print("Bias  , grad_back_prop : {0:2.10f}, grad_numeric : {1:2.10f}" \
+              .format(grad1, grad2))
+    print('eps ' + str(eps))
+    print("difference backpropt/numeric {0:2.10f}".format(grad1 - grad2))
+    print("difference backpropt/numeric {0:2.10f}".format((grad1 - grad2) / (eps ** 2)))
 
 
 if __name__ == "__main__":
@@ -318,4 +360,5 @@ if __name__ == "__main__":
     X_valid, y_valid = load_data(valid_data_fname)
     X_test, y_test = load_data(test_data_fname)
     trainer(model, X_train, y_train, X_valid, y_valid, config)
-    test_acc = test(model, X_test, y_test, config)
+
+
